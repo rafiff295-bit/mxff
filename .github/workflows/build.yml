@@ -1,0 +1,91 @@
+name: Build IPA — LUMINA EXTERNAL
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.3.app
+
+      - name: Setup project
+        run: python3 "setup_and_build.py"
+
+      - name: Verify xcodeproj
+        run: |
+          echo "Working dir: $(pwd)"
+          ls -la
+          ls -la LUMINAEXTERNAL.xcodeproj/ || echo "xcodeproj NOT FOUND"
+          head -30 LUMINAEXTERNAL.xcodeproj/project.pbxproj
+          echo "--- Source files written ---"
+          find Sources -name "*.swift" -o -name "*.m" -o -name "*.c" | sort | head -50
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project LUMINAEXTERNAL.xcodeproj \
+            -scheme LUMINAEXTERNAL \
+            -configuration TgtRelease \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData \
+            SKIP_INSTALL=NO \
+            DEPLOYMENT_POSTPROCESSING=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ENABLE_HARDENED_RUNTIME=NO \
+            build 2>&1 | tee /tmp/xcode_full.log
+          echo "EXIT: $?"
+
+      - name: Show errors and status
+        if: always()
+        run: |
+          echo "=== BUILD RESULT ==="
+          grep -E "BUILD SUCCEEDED|BUILD FAILED" /tmp/xcode_full.log | tail -3
+          echo "=== COMPILER ERRORS ==="
+          grep -E "error:" /tmp/xcode_full.log | grep -v "^note:" | head -60
+          echo "=== LINKER ERRORS ==="
+          grep -iE "ld: error|linker command failed|undefined symbol" /tmp/xcode_full.log | head -20
+
+      - name: Inspect app
+        if: always()
+        run: |
+          APP=$(find DerivedData/Build/Products -maxdepth 3 -name "*.app" 2>/dev/null | head -1)
+          if [ -n "$APP" ]; then
+            echo "App: $APP"
+            ls -lah "$APP/"
+            file "$APP/LUMINAEXTERNAL" 2>/dev/null || echo "No binary found"
+          else
+            echo "No .app produced"
+          fi
+
+      - name: Package IPA
+        run: |
+          APP=$(find DerivedData/Build/Products -maxdepth 3 -name "*.app" | head -1)
+          test -n "$APP"
+          test -f "$APP/LUMINAEXTERNAL" || { echo "Binary missing!"; exit 1; }
+          mkdir -p Payload
+          cp -r "$APP" Payload/LUMINAEXTERNAL.app
+          zip -qr LUMINA_EXTERNAL.ipa Payload/
+          ls -lh LUMINA_EXTERNAL.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LUMINA-EXTERNAL-ipa
+          path: LUMINA_EXTERNAL.ipa
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcode-build-log
+          path: /tmp/xcode_full.log
