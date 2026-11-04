@@ -1,9 +1,9 @@
-name: Build IPA — LUMINA EXTERNAL
+name: Build IPA — FOUGO EXTERNAL
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
+  workflow_dispatch:   # Triggered by the Telegram bot via GitHub API
 
 jobs:
   build:
@@ -21,8 +21,8 @@ jobs:
         run: |
           echo "Working dir: $(pwd)"
           ls -la
-          ls -la LUMINAEXTERNAL.xcodeproj/ || echo "xcodeproj NOT FOUND"
-          head -30 LUMINAEXTERNAL.xcodeproj/project.pbxproj
+          ls -la FOUGOEXTERNAL.xcodeproj/ || echo "xcodeproj NOT FOUND"
+          head -30 FOUGOEXTERNAL.xcodeproj/project.pbxproj
           echo "--- Source files written ---"
           find Sources -name "*.swift" -o -name "*.m" -o -name "*.c" | sort | head -50
 
@@ -30,8 +30,8 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
-            -project LUMINAEXTERNAL.xcodeproj \
-            -scheme LUMINAEXTERNAL \
+            -project FOUGOEXTERNAL.xcodeproj \
+            -scheme FOUGOEXTERNAL \
             -configuration TgtRelease \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -62,7 +62,7 @@ jobs:
           if [ -n "$APP" ]; then
             echo "App: $APP"
             ls -lah "$APP/"
-            file "$APP/LUMINAEXTERNAL" 2>/dev/null || echo "No binary found"
+            file "$APP/FOUGOEXTERNAL" 2>/dev/null || echo "No binary found"
           else
             echo "No .app produced"
           fi
@@ -71,17 +71,18 @@ jobs:
         run: |
           APP=$(find DerivedData/Build/Products -maxdepth 3 -name "*.app" | head -1)
           test -n "$APP"
-          test -f "$APP/LUMINAEXTERNAL" || { echo "Binary missing!"; exit 1; }
+          test -f "$APP/FOUGOEXTERNAL" || { echo "Binary missing!"; exit 1; }
           mkdir -p Payload
-          cp -r "$APP" Payload/LUMINAEXTERNAL.app
-          zip -qr LUMINA_EXTERNAL.ipa Payload/
-          ls -lh LUMINA_EXTERNAL.ipa
+          cp -r "$APP" Payload/FOUGOEXTERNAL.app
+          zip -qr FOUGO_EXTERNAL.ipa Payload/
+          ls -lh FOUGO_EXTERNAL.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: LUMINA-EXTERNAL-ipa
-          path: LUMINA_EXTERNAL.ipa
+          name: FOUGO-EXTERNAL-ipa       # Must match _GH_ARTIFACT in mxff_bot.py
+          path: FOUGO_EXTERNAL.ipa
+          retention-days: 90
 
       - name: Upload build log
         if: always()
@@ -89,3 +90,40 @@ jobs:
         with:
           name: xcode-build-log
           path: /tmp/xcode_full.log
+          retention-days: 7
+
+      # ── Optional: notify the Telegram bot owner on completion ──────────────
+      # Requires BOT_TOKEN and OWNER_ID to be added as GitHub Secrets.
+      # The bot also polls for completion automatically, so this step is a
+      # belt-and-suspenders push notification. It is intentionally a soft
+      # failure (continue-on-error: true) so a missing secret never breaks
+      # the whole workflow.
+      - name: Notify Telegram — Success
+        if: success() && env.BOT_TOKEN != '' && env.OWNER_ID != ''
+        continue-on-error: true
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID:  ${{ secrets.OWNER_ID }}
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG="✅ <b>Build Succeeded</b>%0A%0ARun: <code>${{ github.run_id }}</code>%0A<a href='${RUN_URL}'>View on GitHub</a>%0A%0AOpen the bot → 🔨 Build IPA → 📥 Download IPA"
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${OWNER_ID}" \
+            -d "text=${MSG}" \
+            -d "parse_mode=HTML" \
+            -d "disable_web_page_preview=true" > /dev/null
+
+      - name: Notify Telegram — Failure
+        if: failure() && env.BOT_TOKEN != '' && env.OWNER_ID != ''
+        continue-on-error: true
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID:  ${{ secrets.OWNER_ID }}
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG="❌ <b>Build Failed</b>%0A%0ARun: <code>${{ github.run_id }}</code>%0A<a href='${RUN_URL}'>View logs on GitHub</a>"
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${OWNER_ID}" \
+            -d "text=${MSG}" \
+            -d "parse_mode=HTML" \
+            -d "disable_web_page_preview=true" > /dev/null
