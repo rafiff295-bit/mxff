@@ -35,5 +35,6 @@ jobs:
           GH_WORKFLOW_ID: build.yml
           GH_BRANCH:     main
           DATA_DIR:      data
-          BACKEND_URL:   https://mxff.onrender.com
+                    BACKEND_URL:   https://mxff.onrender.com
+          GIST_ID:       ${{ secrets.GIST_ID }}
         run: python3 mxff_bot.py
