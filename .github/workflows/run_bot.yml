@@ -1,0 +1,39 @@
+name: Run Telegram Bot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 */5 * * *'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create data directory
+        run: mkdir -p data/patches
+
+      - name: Run bot
+        env:
+          GH_TOKEN:      ${{ secrets.GH_TOKEN }}
+          GH_REPO_OWNER: ${{ secrets.GH_REPO_OWNER }}
+          GH_REPO_NAME:  ${{ secrets.GH_REPO_NAME }}
+          GH_WORKFLOW_ID: build.yml
+          GH_BRANCH:     main
+          DATA_DIR:      data
+          BACKEND_URL:   https://mxff.onrender.com
+        run: python3 mxff_bot.py
