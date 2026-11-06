@@ -29,12 +29,12 @@ jobs:
 
       - name: Run bot
         env:
-          GH_TOKEN:      ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GH_REPO_OWNER: ${{ secrets.GH_REPO_OWNER }}
-          GH_REPO_NAME:  ${{ secrets.GH_REPO_NAME }}
+          GH_REPO_NAME: ${{ secrets.GH_REPO_NAME }}
           GH_WORKFLOW_ID: build.yml
-          GH_BRANCH:     main
-          DATA_DIR:      data
-                    BACKEND_URL:   https://mxff.onrender.com
-          GIST_ID:       ${{ secrets.GIST_ID }}
+          GH_BRANCH: main
+          DATA_DIR: data
+          BACKEND_URL: https://mxff.onrender.com
+          GIST_ID: ${{ secrets.GIST_ID }}
         run: python3 mxff_bot.py
