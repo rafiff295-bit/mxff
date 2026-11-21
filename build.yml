@@ -1,18 +1,48 @@
-name: Build IPA — FOUGO EXTERNAL
+name: Build IPA — AIRCORE EXTERNAL
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:   # Triggered by the Telegram bot via GitHub API
+  schedule:
+    # watchdog: প্রতি ৪ ঘণ্টায় বট job চালু হয়, যাতে বট ২৪/৭ অনলাইন থাকে
+    # (build job নিজে schedule-এ স্কিপ করা হয়, শুধু push/manual-এ বিল্ড হয়)
+    - cron: '17 */4 * * *'
+  workflow_dispatch:
+    inputs:
+      aircore_runner:
+        description: 'Runner for the Telegram bot (self-hosted recommended — API needs a public IP)'
+        required: false
+        default: 'self-hosted'
 
 jobs:
   build:
+    name: Build unsigned IPA
+    if: github.event_name != 'schedule'
     runs-on: macos-15
+    timeout-minutes: 60
+    concurrency:
+      group: aircore-build-ipa
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.3.app
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_16.*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          fi
+          if [ -z "$XCODE" ]; then
+            echo "::error::No Xcode found"; exit 1
+          fi
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Setup project
         run: python3 "setup_and_build.py"
@@ -21,8 +51,8 @@ jobs:
         run: |
           echo "Working dir: $(pwd)"
           ls -la
-          ls -la FOUGOEXTERNAL.xcodeproj/ || echo "xcodeproj NOT FOUND"
-          head -30 FOUGOEXTERNAL.xcodeproj/project.pbxproj
+          ls -la AIRCOREEXTERNAL.xcodeproj/ || echo "xcodeproj NOT FOUND"
+          head -30 AIRCOREEXTERNAL.xcodeproj/project.pbxproj
           echo "--- Source files written ---"
           find Sources -name "*.swift" -o -name "*.m" -o -name "*.c" | sort | head -50
 
@@ -30,8 +60,8 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
-            -project FOUGOEXTERNAL.xcodeproj \
-            -scheme FOUGOEXTERNAL \
+            -project AIRCOREEXTERNAL.xcodeproj \
+            -scheme AIRCOREEXTERNAL \
             -configuration TgtRelease \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -62,7 +92,9 @@ jobs:
           if [ -n "$APP" ]; then
             echo "App: $APP"
             ls -lah "$APP/"
-            file "$APP/FOUGOEXTERNAL" 2>/dev/null || echo "No binary found"
+            file "$APP/AIRCOREEXTERNAL" 2>/dev/null || echo "No binary found"
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Info.plist" || true
           else
             echo "No .app produced"
           fi
@@ -71,59 +103,73 @@ jobs:
         run: |
           APP=$(find DerivedData/Build/Products -maxdepth 3 -name "*.app" | head -1)
           test -n "$APP"
-          test -f "$APP/FOUGOEXTERNAL" || { echo "Binary missing!"; exit 1; }
+          test -f "$APP/AIRCOREEXTERNAL" || { echo "Binary missing!"; exit 1; }
+          rm -rf Payload
           mkdir -p Payload
-          cp -r "$APP" Payload/FOUGOEXTERNAL.app
-          zip -qr FOUGO_EXTERNAL.ipa Payload/
-          ls -lh FOUGO_EXTERNAL.ipa
+          cp -r "$APP" "Payload/$(basename "$APP")"
+          rm -rf "Payload/$(basename "$APP")/_CodeSignature" || true
+          zip -qr AIRCORE_EXTERNAL.ipa Payload/
+          ls -lh AIRCORE_EXTERNAL.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: FOUGO-EXTERNAL-ipa       # Must match _GH_ARTIFACT in mxff_bot.py
-          path: FOUGO_EXTERNAL.ipa
-          retention-days: 90
+          name: AIRCORE-EXTERNAL-ipa
+          path: AIRCORE_EXTERNAL.ipa
+          retention-days: 30
+          if-no-files-found: error
 
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xcode-build-log
+          name: aircore-build-log
           path: /tmp/xcode_full.log
           retention-days: 7
+          if-no-files-found: ignore
 
-      # ── Optional: notify the Telegram bot owner on completion ──────────────
-      # Requires BOT_TOKEN and OWNER_ID to be added as GitHub Secrets.
-      # The bot also polls for completion automatically, so this step is a
-      # belt-and-suspenders push notification. It is intentionally a soft
-      # failure (continue-on-error: true) so a missing secret never breaks
-      # the whole workflow.
-      - name: Notify Telegram — Success
-        if: success() && env.BOT_TOKEN != '' && env.OWNER_ID != ''
-        continue-on-error: true
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          OWNER_ID:  ${{ secrets.OWNER_ID }}
-        run: |
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          MSG="✅ <b>Build Succeeded</b>%0A%0ARun: <code>${{ github.run_id }}</code>%0A<a href='${RUN_URL}'>View on GitHub</a>%0A%0AOpen the bot → 🔨 Build IPA → 📥 Download IPA"
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${OWNER_ID}" \
-            -d "text=${MSG}" \
-            -d "parse_mode=HTML" \
-            -d "disable_web_page_preview=true" > /dev/null
+  bot:
+    name: Telegram Bot + API
+    runs-on: ${{ github.event.inputs.aircore_runner || vars.RUNNER_LABEL || 'self-hosted' }}
+    timeout-minutes: 330
+    concurrency:
+      group: aircore-bot-runtime
+      cancel-in-progress: true
+    env:
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN || vars.BOT_TOKEN }}
+      OWNER_ID: ${{ secrets.OWNER_ID || vars.OWNER_ID }}
+      API_PORT: '10020'
+      PATCH_PORT: '10022'
+      DATA_DIR: data
+      PYTHONUNBUFFERED: '1'
+      SAVE_INTERVAL: '300'
+      GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+      GIST_ID: ${{ secrets.GIST_ID }}
+      GIST_FILE: fougo_data.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # data/ মুছে ফেলবেন না — আপলোড করা .onyx প্যাচ ফাইলগুলো ওখানেই থাকে
+          clean: false
 
-      - name: Notify Telegram — Failure
-        if: failure() && env.BOT_TOKEN != '' && env.OWNER_ID != ''
-        continue-on-error: true
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          OWNER_ID:  ${{ secrets.OWNER_ID }}
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
         run: |
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          MSG="❌ <b>Build Failed</b>%0A%0ARun: <code>${{ github.run_id }}</code>%0A<a href='${RUN_URL}'>View logs on GitHub</a>"
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${OWNER_ID}" \
-            -d "text=${MSG}" \
-            -d "parse_mode=HTML" \
-            -d "disable_web_page_preview=true" > /dev/null
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Sanity check
+        run: |
+          python -c "import ast; ast.parse(open('mxff_bot.py').read()); print('mxff_bot.py syntax OK')"
+          python persist_data.py show
+
+      - name: Run bot (supervised)
+        run: bash ./run_bot.sh
+
+      - name: State snapshot
+        if: always()
+        run: python persist_data.py show
